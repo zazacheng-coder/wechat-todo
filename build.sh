@@ -9,6 +9,9 @@ BUNDLE_ID="com.zaza.WeChatTodo"
 echo "==> swift build ..."
 swift build -c release
 
+echo "==> 生成应用图标 ..."
+./scripts/build_icon.sh
+
 BIN=".build/release/WeChatTodo"
 DIST="dist/${APP_NAME}.app"
 
@@ -17,6 +20,7 @@ mkdir -p "$DIST/Contents/MacOS"
 mkdir -p "$DIST/Contents/Resources"
 
 cp "$BIN" "$DIST/Contents/MacOS/WeChatTodo"
+cp "Resources/AppIcon.icns" "$DIST/Contents/Resources/AppIcon.icns"
 
 cat > "$DIST/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,6 +29,8 @@ cat > "$DIST/Contents/Info.plist" <<PLIST
 <dict>
     <key>CFBundleExecutable</key>
     <string>WeChatTodo</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
@@ -46,5 +52,8 @@ cat > "$DIST/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# 刷新 Finder/Dock 缓存，避免旧图标残留（仅本地构建有用，失败不阻断）
+touch "$DIST" 2>/dev/null || true
 
 echo "==> 打包完成: $DIST"
