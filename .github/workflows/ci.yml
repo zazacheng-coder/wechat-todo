@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建 (release)
+        run: swift build -c release
+
+      - name: 解析器单元测试
+        run: ./tests.sh
+
+      - name: 打包 .app
+        run: ./build.sh
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 便签待办-macos
+          path: dist/
+          if-no-files-found: error
