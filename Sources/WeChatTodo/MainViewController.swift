@@ -33,7 +33,8 @@ final class MainViewController: NSViewController {
     private var layoutWorkItem: DispatchWorkItem?
     /// 图片查看窗口（长期持有复用：点红叉仅隐藏不销毁，避免窗口关闭动画崩溃）
     private var imageDetailWindow: NSWindow?
-    private var imageDetailView: NSImageView?
+    /// 图片查看文档视图（可滚动，图片在可见区域内居中）
+    private var imageDetailDoc: ImageCenterView?
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 1080, height: 720))
@@ -450,9 +451,8 @@ final class MainViewController: NSViewController {
     private func openImageDetail(_ path: String) {
         guard let url = TodoStore.shared.imageURL(for: path), let img = NSImage(contentsOf: url) else { return }
         // 复用已创建的查看窗口，只替换图片（窗口长期持有，点红叉仅隐藏）
-        if let win = imageDetailWindow, let iv = imageDetailView {
-            iv.image = img
-            iv.frame = NSRect(x: 0, y: 0, width: max(img.size.width, 600), height: img.size.height)
+        if let win = imageDetailWindow, let doc = imageDetailDoc {
+            doc.setImage(img, minSize: imageDetailMinSize)
             win.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -472,17 +472,22 @@ final class MainViewController: NSViewController {
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 800))
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
-        let iv = NSImageView(frame: NSRect(x: 0, y: 0, width: max(img.size.width, 600), height: img.size.height))
-        iv.image = img
-        iv.imageScaling = .scaleProportionallyUpOrDown
-        scroll.documentView = iv
+        scroll.contentView.postsBoundsChangedNotifications = true
+        let doc = ImageCenterView(image: img, minSize: imageDetailMinSize)
+        scroll.documentView = doc
+        // 窗口缩放时保持图片居中
+        NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { note in
+            (note.object as? NSClipView)?.documentView?.needsLayout = true
+        }
         win.contentView = scroll
         imageDetailWindow = win
-        imageDetailView = iv
+        imageDetailDoc = doc
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
+
+    private var imageDetailMinSize: NSSize { NSSize(width: 600, height: 800) }
 
     // MARK: - 图片查看窗口：点红叉仅隐藏，避开窗口关闭动画崩溃
 
@@ -507,6 +512,51 @@ extension MainViewController: NSWindowDelegate {
         guard sender === imageDetailWindow else { return true }
         sender.orderOut(nil)
         return false
+    }
+}
+
+/// 图片查看文档视图：图片等比缩放适配窗口，并在可见区域内水平垂直居中；
+/// 图片大于可见区域时保持原始缩放比例，可滚动查看（初始显示顶部）
+final class ImageCenterView: NSView {
+    private let imageView = NSImageView()
+    private var imageSize: NSSize = .zero
+
+    override var isFlipped: Bool { true }
+
+    init(image: NSImage, minSize: NSSize) {
+        super.init(frame: .zero)
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(imageView)
+        setImage(image, minSize: minSize)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 设置图片：等比缩放到「宽 ≤ minSize.width 且 高 ≤ minSize.height」（不放大）
+    func setImage(_ image: NSImage, minSize: NSSize) {
+        var s = image.size
+        guard s.width > 0, s.height > 0 else { return }
+        let scale = min(1, min(minSize.width / s.width, minSize.height / s.height))
+        s.width *= scale
+        s.height *= scale
+        imageSize = s
+        imageView.image = image
+        relayout()
+    }
+
+    override func layout() {
+        super.layout()
+        relayout()
+    }
+
+    /// 根据可见区域重排：文档视图撑满可见区域（图片小时居中），超过时按内容滚动
+    private func relayout() {
+        guard let clip = superview as? NSClipView else { return }
+        let vis = clip.bounds.size
+        frame.size = NSSize(width: max(imageSize.width, vis.width), height: max(imageSize.height, vis.height))
+        let x = (frame.width - imageSize.width) / 2
+        let y = (frame.height - imageSize.height) / 2
+        imageView.frame = NSRect(x: max(x, 0), y: max(y, 0), width: imageSize.width, height: imageSize.height)
     }
 }
 
