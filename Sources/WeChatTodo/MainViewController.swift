@@ -441,14 +441,12 @@ final class MainViewController: NSViewController {
             panel.orderOut(nil)
             desktopWidgets.removeValue(forKey: id)
         }
-        // 为新待办创建小组件，默认从右上角依次向下排列
+        // 为新待办创建小组件，默认从屏幕右侧中部依次向下排列
         var index = 0
         for item in pending {
             if desktopWidgets[item.id] == nil {
                 let panel = DesktopWidgetPanel(item: item, mode: desktopWidgetMode)
-                panel.onToggle = { [weak self] id in self?.store.toggle(id) }
-                panel.onDelete = { [weak self] id in self?.store.delete(id) }
-                panel.onPin = { [weak self] in self?.toggleDesktopWidgetMode() }
+                panel.onActivate = { [weak self] in self?.activateMainWindow() }
                 panel.setDefaultColumnIndex(index)
                 desktopWidgets[item.id] = panel
             }
@@ -458,6 +456,14 @@ final class MainViewController: NSViewController {
         for panel in desktopWidgets.values {
             if desktopWidgetsVisible { panel.showWidget() } else { panel.orderOut(nil) }
         }
+    }
+
+    /// 单击桌面小组件时：激活并显示便签应用主窗口
+    private func activateMainWindow() {
+        if let w = view.window {
+            w.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// 点击任意小组件图钉：全局切换 贴桌面 ⇄ 置顶

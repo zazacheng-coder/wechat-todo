@@ -8,15 +8,15 @@ enum DesktopWidgetMode: Int {
 }
 
 /// 桌面小组件窗口：一个未完成待办 = 一张独立小卡片贴在桌面，
-/// 可拖动（位置自动记忆）、点击圆圈完成、点击 ✕ 删除、点击图钉切换贴桌面/置顶
+/// 可拖动（位置自动记忆）、单击跳转到便签应用主窗口操作。
+/// 注：desktopWindow 层级无法成为 key window，按钮 action 无法触发，
+/// 故去掉完成/删除按钮，改为点击卡片整体跳转。
 final class DesktopWidgetPanel: NSPanel {
 
     static let widgetWidth: CGFloat = 260
 
     let itemID: String
-    var onToggle: ((String) -> Void)?
-    var onDelete: ((String) -> Void)?
-    var onPin: (() -> Void)?
+    var onActivate: (() -> Void)?
 
     private var card: DesktopNoteCard!
 
@@ -31,7 +31,8 @@ final class DesktopWidgetPanel: NSPanel {
         )
         isFloatingPanel = true
         hidesOnDeactivate = false
-        isMovableByWindowBackground = true
+        // 手动实现拖动（mouseDown/mouseDragged），以便区分单击跳转与拖动
+        isMovableByWindowBackground = false
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
@@ -42,10 +43,7 @@ final class DesktopWidgetPanel: NSPanel {
         animationBehavior = .none
 
         self.card = card
-        card.onToggle = { [weak self] _ in self?.onToggle?(item.id) }
-        card.onDelete = { [weak self] _ in self?.onDelete?(item.id) }
-        card.onPin = { [weak self] in self?.onPin?() }
-        card.setPinMode(mode == .floating)
+        card.onActivate = { [weak self] in self?.onActivate?() }
         contentView = card
 
         apply(mode: mode)
@@ -64,15 +62,20 @@ final class DesktopWidgetPanel: NSPanel {
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
         if mode == .desktop {
+            // 贴桌面壁纸层（桌面图标之下）。+偏移会导致窗口不再被当作桌面窗口渲染而消失，
+            // 故保持原 desktopWindow level；点击通过 canBecomeKey + becomesKeyOnlyIfNeeded=false 解决
             level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)))
-            becomesKeyOnlyIfNeeded = true
         } else {
             level = .floating
-            becomesKeyOnlyIfNeeded = false
         }
+        // 关键：两种模式都设 false，确保点击完成/删除按钮时立即成为 key 并触发 action，
+        // 否则 becomesKeyOnlyIfNeeded=true 会导致第一次点击只激活窗口、不触发按钮
+        becomesKeyOnlyIfNeeded = false
         NSAnimationContext.endGrouping()
-        card.setPinMode(mode == .floating)
     }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 
     private func restoreFrame() {
         if let saved = UserDefaults.standard.string(forKey: "desktopWidgetFrame-\(itemID)"), saved != "" {
@@ -82,9 +85,10 @@ final class DesktopWidgetPanel: NSPanel {
                 return
             }
         }
-        // 首次出现：从屏幕右上角开始，按创建顺序依次向下排
+        // 首次出现：以屏幕右侧垂直中点为基准，按创建顺序依次向下排
         if let screen = NSScreen.main {
-            let y = screen.visibleFrame.maxY - 16 - CGFloat(indexInColumn) * (frame.height + 12)
+            let midY = screen.visibleFrame.midY
+            let y = midY + frame.height / 2 - CGFloat(indexInColumn) * (frame.height + 12)
             setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX - frame.width - 16, y: y))
         }
     }
@@ -96,7 +100,8 @@ final class DesktopWidgetPanel: NSPanel {
         indexInColumn = index
         if UserDefaults.standard.string(forKey: "desktopWidgetFrame-\(itemID)") == nil {
             if let screen = NSScreen.main {
-                let y = screen.visibleFrame.maxY - 16 - CGFloat(index) * (frame.height + 12)
+                let midY = screen.visibleFrame.midY
+                let y = midY + frame.height / 2 - CGFloat(index) * (frame.height + 12)
                 setFrameOrigin(NSPoint(x: screen.visibleFrame.maxX - frame.width - 16, y: y))
             }
         }
@@ -112,18 +117,18 @@ final class DesktopWidgetPanel: NSPanel {
 
 final class DesktopNoteCard: NSView {
     let item: TodoItem
-    var onToggle: ((String) -> Void)?
-    var onDelete: ((String) -> Void)?
-    var onPin: (() -> Void)?
+    var onActivate: (() -> Void)?
     var bestHeight: CGFloat = 60
 
-    private let check = CircularCheckControl()
-    private let deleteBtn = NSButton()
-    private let pinBtn = NSButton()
     private let titleLabel = NSTextField(labelWithString: "")
     private let timeLabel = NSTextField(labelWithString: "")
     private var relLabels: [NSTextField] = []
     private let width: CGFloat
+
+    // 拖动与单击区分
+    private var mouseDownPoint: NSPoint = .zero
+    private var initialWindowOrigin: NSPoint = .zero
+    private var didDrag = false
 
     static var cardBackground: NSColor {
         NSColor(name: nil) { appearance in
@@ -151,41 +156,9 @@ final class DesktopNoteCard: NSView {
 
     override var isFlipped: Bool { true }
 
-    /// 置顶模式显示图钉实心，贴桌面显示斜杠
-    func setPinMode(_ pinned: Bool) {
-        let name = pinned ? "pin.fill" : "pin.slash"
-        pinBtn.image = NSImage(systemSymbolName: name, accessibilityDescription: pinned ? "置顶中" : "贴桌面")
-        pinBtn.contentTintColor = pinned ? .systemBlue : .secondaryLabelColor
-    }
-
     private func setup() {
         let bodyX: CGFloat = 14
-        let bodyW = width - 96
-
-        check.frame = NSRect(x: width - 30, y: 12, width: 20, height: 20)
-        check.checked = false
-        check.onToggle = { [weak self] _ in
-            guard let self else { return }
-            self.onToggle?(self.item.id)
-        }
-        addSubview(check)
-
-        deleteBtn.title = "✕"
-        deleteBtn.isBordered = false
-        deleteBtn.font = .systemFont(ofSize: 10)
-        deleteBtn.contentTintColor = .secondaryLabelColor
-        deleteBtn.setButtonType(.momentaryChange)
-        deleteBtn.target = self
-        deleteBtn.action = #selector(deleteTapped)
-        deleteBtn.frame = NSRect(x: width - 56, y: 13, width: 20, height: 18)
-        addSubview(deleteBtn)
-
-        pinBtn.isBordered = false
-        pinBtn.setButtonType(.momentaryChange)
-        pinBtn.target = self
-        pinBtn.action = #selector(pinTapped)
-        pinBtn.frame = NSRect(x: width - 80, y: 12, width: 20, height: 20)
-        addSubview(pinBtn)
+        let bodyW = width - 28
 
         titleLabel.stringValue = item.summary.isEmpty ? "（无标题）" : item.summary
         titleLabel.font = .systemFont(ofSize: 12.5, weight: .semibold)
@@ -230,12 +203,31 @@ final class DesktopNoteCard: NSView {
         bestHeight = y
     }
 
-    @objc private func deleteTapped() {
-        onDelete?(item.id)
+    // MARK: - 拖动 + 单击跳转（手动实现，区分拖动与点击）
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownPoint = NSEvent.mouseLocation
+        initialWindowOrigin = window?.frame.origin ?? .zero
+        didDrag = false
     }
 
-    @objc private func pinTapped() {
-        onPin?()
+    override func mouseDragged(with event: NSEvent) {
+        let current = NSEvent.mouseLocation
+        let dx = current.x - mouseDownPoint.x
+        let dy = current.y - mouseDownPoint.y
+        if !didDrag && (abs(dx) > 4 || abs(dy) > 4) {
+            didDrag = true
+        }
+        if didDrag, let win = window {
+            win.setFrameOrigin(NSPoint(x: initialWindowOrigin.x + dx, y: initialWindowOrigin.y + dy))
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // 未拖动 = 单击：跳转到便签应用主窗口
+        if !didDrag {
+            onActivate?()
+        }
     }
 
     private static func formatTime(_ date: Date) -> String {
