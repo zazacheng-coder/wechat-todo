@@ -45,6 +45,8 @@ final class DesktopNotesPanel: NSPanel {
         title = "桌面便签"
         // 关键：防止 AppKit 在窗口关闭/动画时额外 release 窗口对象（ARC 下会导致过度释放崩溃）
         isReleasedWhenClosed = false
+        // 禁用显示/关闭的 transform 动画（与主窗口截图切换动画交错会触发过度释放崩溃）
+        animationBehavior = .none
 
         let savedMode = UserDefaults.standard.integer(forKey: "desktopPanelMode")
         currentMode = Mode(rawValue: savedMode) ?? .desktop

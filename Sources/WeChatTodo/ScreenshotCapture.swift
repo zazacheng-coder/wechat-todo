@@ -72,6 +72,12 @@ enum ScreenshotService {
 
 /// 全屏框选窗口（盖住整个屏幕，类似系统截图工具）
 final class CaptureOverlayWindow: NSWindow {
+    /// 强持有最近一次使用的覆盖窗口。
+    /// 崩溃根因：窗口关闭/取消时被提前释放，而 AppKit 的 _NSWindowTransformAnimation
+    /// （层级切换/关闭动画）仍引用它，动画随 CA 事务提交时过度释放已销毁的窗口 → 闪退。
+    /// 保持窗口存活（直到下次截图替换）可保证动画引用时窗口一定存在。
+    private static var keepAlive: CaptureOverlayWindow?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
@@ -83,6 +89,10 @@ final class CaptureOverlayWindow: NSWindow {
             defer: false
         )
         level = .screenSaver
+        // 防止窗口关闭/取消时被 AppKit 额外 release（ARC 下过度释放崩溃）
+        isReleasedWhenClosed = false
+        // 截图覆盖层不需要任何显示/关闭动画
+        animationBehavior = .none
         backgroundColor = .clear
         isOpaque = false
         contentView = CaptureOverlayView(
@@ -92,6 +102,8 @@ final class CaptureOverlayWindow: NSWindow {
             onCapture: onCapture,
             onCancel: onCancel
         )
+        // 保持自身存活，避免 transform 动画引用已释放的窗口（见 keepAlive 注释）
+        Self.keepAlive = self
     }
 }
 

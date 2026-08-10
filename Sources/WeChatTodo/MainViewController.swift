@@ -267,13 +267,16 @@ final class MainViewController: NSViewController {
         view.window?.orderOut(nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self else { return }
-            if wasVisible { self.view.window?.makeKeyAndOrderFront(nil) }
+            // 先截屏（此刻主窗口已隐藏，屏幕干净），再恢复主窗口，
+            // 避免主窗口显示动画与 CGDisplayCreateImage 截屏交错触发过度释放崩溃
             guard let cg = ScreenshotService.captureMainDisplay(), let screen = NSScreen.main else {
+                if wasVisible { self.view.window?.makeKeyAndOrderFront(nil) }
                 self.processing = false
                 self.screenshotButton.isEnabled = true
                 self.statusLabel.stringValue = "截图失败，请重试"
                 return
             }
+            if wasVisible { self.view.window?.makeKeyAndOrderFront(nil) }
             let img = NSImage(cgImage: cg, size: screen.frame.size)
             let overlay = CaptureOverlayWindow(
                 screen: screen,

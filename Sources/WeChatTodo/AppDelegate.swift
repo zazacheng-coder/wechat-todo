@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.minSize = NSSize(width: 720, height: 480)
         // 关键：防止 AppKit 在关闭窗口时额外 release（ARC 下导致窗口悬空、reopen 崩溃）
         window.isReleasedWhenClosed = false
+        // 禁用显示/关闭的 transform 动画：截图时主窗口 orderOut→makeKeyAndOrderFront 与
+        // CGDisplayCreateImage 截屏交错会触发 _NSWindowTransformAnimation 过度释放崩溃
+        window.animationBehavior = .none
         window.contentViewController = mainVC
         window.center()
         window.setFrameAutosaveName("WeChatTodoMainWindow")
