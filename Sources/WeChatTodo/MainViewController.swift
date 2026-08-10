@@ -14,10 +14,15 @@ final class MainViewController: NSViewController {
     private let screenshotButton = NSButton()
     private let pasteButton = NSButton()
     private let newButton = NSButton()
-    private let desktopCheckbox = NSButton(checkboxWithTitle: "桌面便签", target: nil, action: nil)
+    private let desktopCheckbox = NSButton(checkboxWithTitle: "桌面小组件", target: nil, action: nil)
     private let filterControl = NSSegmentedControl(labels: ["全部", "待办", "已完成"], trackingMode: .selectOne, target: nil, action: nil)
     private let countLabel = NSTextField(labelWithString: "")
-    private let desktopPanel = DesktopNotesPanel()
+    /// 桌面小组件：每个未完成待办一张独立卡片
+    private var desktopWidgets: [String: DesktopWidgetPanel] = [:]
+    private var desktopWidgetMode: DesktopWidgetMode = {
+        DesktopWidgetMode(rawValue: UserDefaults.standard.integer(forKey: "desktopPanelMode")) ?? .desktop
+    }()
+    private var desktopWidgetsVisible = true
 
     private let scrollView = NSScrollView()
     private let container = FlippedView()
@@ -45,11 +50,14 @@ final class MainViewController: NSViewController {
         reload()
         // 数据变化时异步刷新，避免在事件/动画栈内重建视图
         store.subscribe { [weak self] in
-            DispatchQueue.main.async { self?.reload() }
+            DispatchQueue.main.async {
+                self?.reload()
+                self?.syncDesktopWidgets()
+            }
         }
-        // 默认开启桌面常驻便签
+        // 默认开启桌面常驻小组件
         desktopCheckbox.state = .on
-        desktopPanel.showPanel()
+        syncDesktopWidgets()
         // 监听剪贴板变化可选的增强，此处不做
     }
 
@@ -99,7 +107,7 @@ final class MainViewController: NSViewController {
         desktopCheckbox.font = .systemFont(ofSize: 12.5)
         desktopCheckbox.sizeToFit()
         desktopCheckbox.frame = NSRect(x: newButton.frame.maxX + 18, y: 11, width: desktopCheckbox.frame.width + 8, height: 30)
-        desktopCheckbox.toolTip = "未完成待办自动贴在桌面（可切换贴桌面/置顶）"
+        desktopCheckbox.toolTip = "未完成待办以独立小组件卡片贴在桌面（可拖动，点击图钉切换贴桌面/置顶）"
         toolbar.addSubview(desktopCheckbox)
 
         filterControl.selectedSegment = 0
@@ -412,10 +420,52 @@ final class MainViewController: NSViewController {
     }
 
     @objc private func toggleDesktopPanel() {
-        if desktopCheckbox.state == .on {
-            desktopPanel.showPanel()
-        } else {
-            desktopPanel.orderOut(nil)
+        desktopWidgetsVisible = desktopCheckbox.state == .on
+        for panel in desktopWidgets.values {
+            if desktopWidgetsVisible {
+                panel.showWidget()
+            } else {
+                panel.orderOut(nil)
+            }
+        }
+    }
+
+    // MARK: - 桌面小组件
+
+    /// 与数据同步：新增/完成/删除待办时，创建或移除对应小组件窗口
+    private func syncDesktopWidgets() {
+        let pending = store.items.filter { !$0.isCompleted }
+        let ids = Set(pending.map { $0.id })
+        // 移除已完成/已删除的小组件
+        for (id, panel) in desktopWidgets where !ids.contains(id) {
+            panel.orderOut(nil)
+            desktopWidgets.removeValue(forKey: id)
+        }
+        // 为新待办创建小组件，默认从右上角依次向下排列
+        var index = 0
+        for item in pending {
+            if desktopWidgets[item.id] == nil {
+                let panel = DesktopWidgetPanel(item: item, mode: desktopWidgetMode)
+                panel.onToggle = { [weak self] id in self?.store.toggle(id) }
+                panel.onDelete = { [weak self] id in self?.store.delete(id) }
+                panel.onPin = { [weak self] in self?.toggleDesktopWidgetMode() }
+                panel.setDefaultColumnIndex(index)
+                desktopWidgets[item.id] = panel
+            }
+            index += 1
+        }
+        // 应用整体显隐（桌面小组件复选框）
+        for panel in desktopWidgets.values {
+            if desktopWidgetsVisible { panel.showWidget() } else { panel.orderOut(nil) }
+        }
+    }
+
+    /// 点击任意小组件图钉：全局切换 贴桌面 ⇄ 置顶
+    private func toggleDesktopWidgetMode() {
+        desktopWidgetMode = desktopWidgetMode == .desktop ? .floating : .desktop
+        UserDefaults.standard.set(desktopWidgetMode.rawValue, forKey: "desktopPanelMode")
+        for panel in desktopWidgets.values {
+            panel.apply(mode: desktopWidgetMode)
         }
     }
 
