@@ -31,6 +31,9 @@ final class MainViewController: NSViewController {
     private var pendingChatTitle: String?
     /// 节流用的重排任务（避免布局/事件期间同步重建子视图导致崩溃）
     private var layoutWorkItem: DispatchWorkItem?
+    /// 图片查看窗口（长期持有复用：点红叉仅隐藏不销毁，避免窗口关闭动画崩溃）
+    private var imageDetailWindow: NSWindow?
+    private var imageDetailView: NSImageView?
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 1080, height: 720))
@@ -446,6 +449,14 @@ final class MainViewController: NSViewController {
 
     private func openImageDetail(_ path: String) {
         guard let url = TodoStore.shared.imageURL(for: path), let img = NSImage(contentsOf: url) else { return }
+        // 复用已创建的查看窗口，只替换图片（窗口长期持有，点红叉仅隐藏）
+        if let win = imageDetailWindow, let iv = imageDetailView {
+            iv.image = img
+            iv.frame = NSRect(x: 0, y: 0, width: max(img.size.width, 600), height: img.size.height)
+            win.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 800),
             styleMask: [.titled, .closable, .resizable],
@@ -453,6 +464,11 @@ final class MainViewController: NSViewController {
             defer: false
         )
         win.title = "聊天截图"
+        // 关键：窗口由属性长期持有；点红叉时仅隐藏不销毁（见 windowShouldClose），
+        // 彻底避开「局部窗口被 ARC 释放 + 关闭动画引用已销毁窗口」的闪退
+        win.isReleasedWhenClosed = false
+        win.animationBehavior = .none
+        win.delegate = self
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 600, height: 800))
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -461,8 +477,17 @@ final class MainViewController: NSViewController {
         iv.imageScaling = .scaleProportionallyUpOrDown
         scroll.documentView = iv
         win.contentView = scroll
+        imageDetailWindow = win
+        imageDetailView = iv
         win.center()
         win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - 图片查看窗口：点红叉仅隐藏，避开窗口关闭动画崩溃
+
+    private func dismissImageDetail() {
+        imageDetailWindow?.orderOut(nil)
     }
 
     private func showMessage(_ msg: String, info: String) {
@@ -475,6 +500,15 @@ final class MainViewController: NSViewController {
 }
 
 // MARK: - 辅助
+
+/// 图片查看窗口关闭拦截：点红叉仅隐藏不销毁，避开窗口关闭动画的过度释放崩溃
+extension MainViewController: NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === imageDetailWindow else { return true }
+        sender.orderOut(nil)
+        return false
+    }
+}
 
 final class FlippedView: NSView {
     override var isFlipped: Bool { true }
